@@ -1,0 +1,6 @@
+{
+  "name": "MailGenius AI",
+  "description": "An AI-powered email assistant that helps users write professional emails, summarize incoming mail, and generate replies in seconds.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
