@@ -3,6 +3,7 @@
   "appId": "1:576459670995:web:67d96f346ff5dd36761b26",
   "apiKey": "AIzaSyArna0rEmoiyMm4f7r5f2bu6tWotj7yUow",
   "authDomain": "total-agility-j07pf.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-mailgeniusai-a7fba1c7-8682-4cbc-9af6-d2d4fa361337",
   "storageBucket": "total-agility-j07pf.firebasestorage.app",
   "messagingSenderId": "576459670995",
   "measurementId": ""

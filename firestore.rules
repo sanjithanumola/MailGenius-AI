@@ -1,0 +1,78 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable global security helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Validation Blueprint for the Draft Entity
+    function isValidDraft(draft) {
+      return (
+        draft.userId == request.auth.uid &&
+        draft.subject is string && draft.subject.size() <= 256 &&
+        draft.body is string && draft.body.size() <= 50000 &&
+        (!('recipient' in draft) || (draft.recipient is string && draft.recipient.size() <= 256)) &&
+        (!('recipientEmail' in draft) || (draft.recipientEmail is string && draft.recipientEmail.size() <= 256)) &&
+        (!('tone' in draft) || (draft.tone is string && draft.tone.size() <= 128)) &&
+        (!('language' in draft) || (draft.language is string && draft.language.size() <= 128)) &&
+        (!('isStarred' in draft) || (draft.isStarred is bool)) &&
+        draft.createdAt is timestamp &&
+        draft.updatedAt is timestamp
+      );
+    }
+
+    // User Resource Sandbox
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if isEmailVerified() && request.auth.uid == userId;
+
+      // Draft Subcollection Access Rules
+      match /drafts/{draftId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(draftId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        
+        allow create: if isEmailVerified() && request.auth.uid == userId && isValidId(draftId) &&
+          incoming().keys().hasAll(['userId', 'subject', 'body', 'createdAt', 'updatedAt']) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          isValidDraft(incoming());
+          
+        allow update: if isEmailVerified() && request.auth.uid == userId && isValidId(draftId) &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().userId == existing().userId &&
+          incoming().updatedAt == request.time &&
+          isValidDraft(incoming()) && (
+            // Partitioned Action: Star Toggle
+            (incoming().diff(existing()).affectedKeys().hasOnly(['isStarred', 'updatedAt'])) ||
+            // Partitioned Action: Edit content keys
+            (incoming().diff(existing()).affectedKeys().hasAll(['updatedAt']) && 
+             incoming().diff(existing()).affectedKeys().hasAny(['subject', 'body', 'recipient', 'recipientEmail', 'tone', 'language']))
+          );
+          
+        allow delete: if isEmailVerified() && request.auth.uid == userId && isValidId(draftId);
+      }
+    }
+  }
+}

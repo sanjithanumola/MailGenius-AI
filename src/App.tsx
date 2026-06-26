@@ -1,11 +1,17 @@
 import React, { useState, useEffect } from "react";
 import {
-  initAuth,
-  googleSignIn,
-  logout,
-  getAccessToken,
-} from "./lib/firebase";
-import { fetchInbox, sendGmail, GmailMessage } from "./lib/gmail";
+  getSupabaseDrafts,
+  saveSupabaseDraft,
+  toggleSupabaseStarDraft,
+  deleteSupabaseDraft,
+  isSupabaseConfigured,
+  SUPABASE_SETUP_SQL,
+  supabaseSignIn,
+  supabaseSignUp,
+  supabaseSignOut,
+  onSupabaseAuthStateChange,
+  Draft
+} from "./lib/supabase";
 import { jsPDF } from "jspdf";
 import {
   Mail,
@@ -30,20 +36,49 @@ import {
   Search,
   CheckCircle,
   AlertTriangle,
+  Star,
+  Trash2,
+  LogIn,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
 export default function App() {
   // Auth state
   const [user, setUser] = useState<any>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(true);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [authErrorDetail, setAuthErrorDetail] = useState<string | null>(null);
+  const [isIframe, setIsIframe] = useState(false);
 
-  // Tab state: "write" or "inbox"
-  const [activeTab, setActiveTab] = useState<"write" | "inbox">("write");
+  // Supabase Auth Form States
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [isSignUp, setIsSignUp] = useState(false);
 
-  // Inbox state
+  // Tab state: "write" or "inbox" or "drafts"
+  const [activeTab, setActiveTab] = useState<"write" | "inbox" | "drafts">("write");
+
+  // Cloud Firestore Saved Drafts State
+  const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [isLoadingDrafts, setIsLoadingDrafts] = useState(false);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
+  const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
+
+  // Database provider is now purely Supabase
+  const [supabaseMissingTable, setSupabaseMissingTable] = useState(false);
+  const [isCopiedSql, setIsCopiedSql] = useState(false);
+
+  // Inbox state (Simulated)
+  interface GmailMessage {
+    id: string;
+    threadId: string;
+    subject: string;
+    from: string;
+    to: string;
+    date: string;
+    snippet: string;
+    body: string;
+  }
   const [inbox, setInbox] = useState<GmailMessage[]>([]);
   const [selectedMessage, setSelectedMessage] = useState<GmailMessage | null>(null);
   const [isFetchingInbox, setIsFetchingInbox] = useState(false);
@@ -78,24 +113,173 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
 
-  // Initialize auth state
+  // Pre-loaded simulated inbox emails
+  const MOCK_INBOX_EMAILS: GmailMessage[] = [
+    {
+      id: "mock-1",
+      threadId: "thread-1",
+      subject: "Partnership Proposal: MailGenius AI integration",
+      from: "Rahul Kumar <rahul@innovatetech.io>",
+      to: "me@example.com",
+      date: new Date().toISOString(),
+      snippet: "Hi Team, I saw MailGenius AI and loved the concept. We want to discuss integrating your generation services into our enterprise workflow. Are you free for a call?",
+      body: `Hi Team,<br/><br/>I saw MailGenius AI and loved the concept! We are a high-growth SaaS platform helping teams streamline operations.<br/><br/>We are highly interested in discussing an enterprise integration to incorporate your email drafting capabilities directly into our customer engagement module.<br/><br/>Are you free for a brief 15-minute introductory call next Monday or Tuesday afternoon?<br/><br/>Best regards,<br/>Rahul Kumar<br/>Director of Partnerships | InnovateTech`
+    },
+    {
+      id: "mock-2",
+      threadId: "thread-2",
+      subject: "Feedback regarding recent product shipment",
+      from: "Sarah Jenkins <sarah.j@gmail.com>",
+      to: "me@example.com",
+      date: new Date(Date.now() - 3600000).toISOString(),
+      snippet: "Hello, I recently ordered your premium workspace organizer but received a slightly different size. I would love to know how to exchange it...",
+      body: `Hello,<br/><br/>I recently placed an order for your premium workspace organizer. It arrived today, but it appears to be a slightly different size than what was specified on your website.<br/><br/>Could you please let me know how I can initiate an exchange for the correct size? I really love the build quality and hope to resolve this soon.<br/><br/>Thank you,<br/>Sarah Jenkins`
+    },
+    {
+      id: "mock-3",
+      threadId: "thread-3",
+      subject: "Urgent: Rescheduling Design Review meeting",
+      from: "David Miller <david.m@designstudio.com>",
+      to: "me@example.com",
+      date: new Date(Date.now() - 7200000 * 2).toISOString(),
+      snippet: "Hi, due to an unexpected conflict, I need to reschedule our project review tomorrow morning. Can we move it to the afternoon or Wednesday?",
+      body: `Hi,<br/><br/>Apologies for the last-minute request, but due to an unexpected client emergency, I won't be able to make our scheduled Design Review meeting tomorrow morning at 10 AM.<br/><br/>Would it be possible to reschedule to tomorrow afternoon at 3 PM, or alternatively anytime on Wednesday morning?<br/><br/>Let me know what works best for you.<br/><br/>Thanks,<br/>David Miller`
+    }
+  ];
+
+  // Initialize auth state and load simulated inbox
   useEffect(() => {
-    const unsubscribe = initAuth(
-      (currentUser, cachedToken) => {
-        setUser(currentUser);
-        setToken(cachedToken);
+    setIsIframe(window.self !== window.top);
+    
+    const unsubscribe = onSupabaseAuthStateChange((supabaseUser) => {
+      if (supabaseUser) {
+        setUser({
+          uid: supabaseUser.id,
+          email: supabaseUser.email,
+          displayName: supabaseUser.email?.split("@")[0] || "User",
+        });
         setNeedsAuth(false);
-        // Automatically fetch inbox if authenticated
-        loadInbox(cachedToken);
-      },
-      () => {
+      } else {
         setUser(null);
-        setToken(null);
         setNeedsAuth(true);
       }
-    );
+    });
+
+    // Populate mock inbox initial set
+    setInbox(MOCK_INBOX_EMAILS);
+
     return () => unsubscribe();
   }, []);
+
+  // Fetch saved drafts from selected database
+  const fetchAndSetDrafts = async () => {
+    if (!user) return;
+    setIsLoadingDrafts(true);
+    setSupabaseMissingTable(false);
+    try {
+      const allDrafts = await getSupabaseDrafts(user.uid);
+      setDrafts(allDrafts);
+    } catch (err: any) {
+      console.error("Error loading drafts:", err);
+      if (err.message === "SUPABASE_TABLE_MISSING") {
+        setSupabaseMissingTable(true);
+        showToast("Supabase table 'drafts' is missing. Setup required.", "error");
+      } else {
+        showToast("Error loading drafts: " + err.message, "error");
+      }
+    } finally {
+      setIsLoadingDrafts(false);
+    }
+  };
+
+  // Sync drafts list when user auth status changes
+  useEffect(() => {
+    if (user) {
+      fetchAndSetDrafts();
+    } else {
+      setDrafts([]);
+    }
+  }, [user]);
+
+  // Draft operations handlers
+  const handleSaveCurrentDraft = async () => {
+    if (!emailBody) {
+      showToast("Email body is empty, nothing to save.", "error");
+      return;
+    }
+    setIsSavingDraft(true);
+    try {
+      const savedId = await saveSupabaseDraft(user.uid, {
+        id: currentDraftId || undefined,
+        recipient: recipient || emailTo.split("@")[0] || "No recipient name",
+        recipientEmail: emailTo || recipientEmail || "",
+        subject: emailSubject || "(No Subject)",
+        body: emailBody,
+        tone: tone,
+        language: language,
+        isStarred: false,
+      });
+      setCurrentDraftId(savedId);
+      showToast(currentDraftId ? "Draft updated in Supabase!" : "Draft saved to Supabase!", "success");
+      await fetchAndSetDrafts();
+    } catch (err: any) {
+      console.error("Failed to save draft:", err);
+      if (err.message === "SUPABASE_TABLE_MISSING") {
+        setSupabaseMissingTable(true);
+        showToast("Supabase drafts table is missing. Setup required.", "error");
+      } else {
+        showToast("Failed to save draft: " + err.message, "error");
+      }
+    } finally {
+      setIsSavingDraft(false);
+    }
+  };
+
+  const handleToggleStar = async (draftItem: Draft) => {
+    try {
+      await toggleSupabaseStarDraft(draftItem.id, draftItem.isStarred, user.uid);
+      showToast(draftItem.isStarred ? "Removed star from draft" : "Draft starred!", "success");
+      await fetchAndSetDrafts();
+    } catch (err: any) {
+      console.error("Failed to toggle star:", err);
+      showToast("Error updating star: " + err.message, "error");
+    }
+  };
+
+  const handleDeleteDraft = async (draftId: string) => {
+    if (!confirm("Are you sure you want to delete this draft?")) return;
+    try {
+      await deleteSupabaseDraft(draftId, user.uid);
+      if (currentDraftId === draftId) {
+        setCurrentDraftId(null);
+      }
+      showToast("Draft deleted successfully.", "success");
+      await fetchAndSetDrafts();
+    } catch (err: any) {
+      console.error("Failed to delete draft:", err);
+      showToast("Error deleting draft: " + err.message, "error");
+    }
+  };
+
+  const handleLoadDraft = (draft: Draft) => {
+    setCurrentDraftId(draft.id);
+    setEmailTo(draft.recipientEmail);
+    setEmailSubject(draft.subject);
+    setEmailBody(draft.body);
+    setRecipient(draft.recipient);
+    setRecipientEmail(draft.recipientEmail);
+    setTone(draft.tone);
+    setLanguage(draft.language);
+    showToast("Loaded draft into Editor!", "info");
+  };
+
+  const handleClearEditor = () => {
+    setCurrentDraftId(null);
+    setEmailTo("");
+    setEmailSubject("");
+    setEmailBody("");
+    setSelectedMessage(null);
+  };
 
   // Show a toast message
   const showToast = (message: string, type: "success" | "error" | "info" = "success") => {
@@ -105,34 +289,57 @@ export default function App() {
     }, 4000);
   };
 
-  // Google Login Handler
-  const handleLogin = async () => {
+  // Supabase Auth Handler (Email & Password / SignUp or SignIn)
+  const handleSupabaseAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authEmail || !authPassword) {
+      showToast("Please enter both email and password.", "error");
+      return;
+    }
+    if (authPassword.length < 6) {
+      showToast("Password must be at least 6 characters.", "error");
+      return;
+    }
+
     setIsLoggingIn(true);
+    setAuthErrorDetail(null);
     try {
-      const result = await googleSignIn();
-      if (result) {
-        setToken(result.accessToken);
-        setUser(result.user);
-        setNeedsAuth(false);
-        showToast(`Successfully logged in as ${result.user.email}!`, "success");
-        loadInbox(result.accessToken);
+      if (isSignUp) {
+        await supabaseSignUp(authEmail, authPassword);
+        showToast("Sign up initiated! If email confirmation is enabled, please verify your email.", "success");
+      } else {
+        await supabaseSignIn(authEmail, authPassword);
+        showToast("Signed in successfully!", "success");
       }
     } catch (err: any) {
-      console.error("Login failed:", err);
-      showToast(err.message || "Login failed. Please try again.", "error");
+      console.error("Auth failed:", err);
+      showToast(err.message || "Authentication failed. Check your credentials.", "error");
+      setAuthErrorDetail(err.message || "An authentication error occurred.");
     } finally {
       setIsLoggingIn(false);
     }
   };
 
-  // Google Logout Handler
+  // Guest Bypass Login Handler
+  const handleGuestAccess = () => {
+    setUser({
+      uid: "guest-user-123",
+      email: "guest@mailgenius.ai",
+      displayName: "Guest Explorer",
+    });
+    setNeedsAuth(false);
+    showToast("Logged in as Guest!", "info");
+  };
+
+  // Sign out Handler
   const handleLogout = async () => {
     try {
-      await logout();
+      // If the current user is a guest, just clear state, else sign out from Supabase
+      if (user?.uid !== "guest-user-123") {
+        await supabaseSignOut();
+      }
       setUser(null);
-      setToken(null);
       setNeedsAuth(true);
-      setInbox([]);
       setSelectedMessage(null);
       showToast("Successfully logged out.", "info");
     } catch (err: any) {
@@ -140,26 +347,25 @@ export default function App() {
     }
   };
 
-  // Fetch inbox from Gmail API
-  const loadInbox = async (accessToken: string) => {
-    if (!accessToken) return;
+  // Fetch / Sync Simulated Inbox
+  const loadInbox = async () => {
     setIsFetchingInbox(true);
     setInboxError(null);
     try {
-      const data = await fetchInbox(accessToken);
-      setInbox(data);
+      // Simulate real latency of 600ms
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      setInbox(MOCK_INBOX_EMAILS);
     } catch (err: any) {
-      console.error("Error reading Gmail inbox:", err);
-      setInboxError(err.message || "Could not sync Gmail inbox. Please check permissions.");
+      console.error("Error reading simulated inbox:", err);
+      setInboxError("Could not sync inbox.");
     } finally {
       setIsFetchingInbox(false);
     }
   };
 
   const handleRefreshInbox = async () => {
-    if (!token) return;
-    showToast("Syncing your Gmail inbox...", "info");
-    await loadInbox(token);
+    showToast("Syncing simulated inbox...", "info");
+    await loadInbox();
   };
 
   // Pre-fill prompt generator templates
@@ -407,12 +613,8 @@ export default function App() {
     }
   };
 
-  // Send Email via Gmail API (Requires user confirmation)
+  // Send Email (Simulated dispatch)
   const handleSendGmail = async () => {
-    if (!token) {
-      showToast("Authentication required.", "error");
-      return;
-    }
     if (!emailTo) {
       showToast("Recipient email is required to send.", "error");
       return;
@@ -425,17 +627,19 @@ export default function App() {
     setIsSending(true);
     setShowConfirmSend(false);
     try {
-      await sendGmail(token, emailTo, emailSubject, emailBody);
-      showToast("Email sent successfully via Gmail!", "success");
+      // Simulate real transmission latency of 1 second
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      showToast("Email dispatched successfully! (Simulated send)", "success");
       
       // Clear composer states on successful send
       setEmailTo("");
       setEmailSubject("");
       setEmailBody("");
       setSelectedMessage(null);
+      setCurrentDraftId(null);
     } catch (err: any) {
       console.error(err);
-      showToast(err.message || "Failed to send email via Gmail.", "error");
+      showToast("Failed to send email.", "error");
     } finally {
       setIsSending(false);
     }
@@ -443,6 +647,25 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col antialiased">
+      {/* Iframe Preview Warning & Redirect */}
+      {isIframe && (
+        <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-amber-500 text-white px-4 py-2 text-center text-xs font-semibold flex flex-wrap items-center justify-center gap-x-3 gap-y-1 relative z-50 shadow-sm border-b border-amber-600/20">
+          <span className="flex items-center gap-1.5">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-100" />
+            <span>Currently in preview iframe. Browsers block authentication popups inside cross-origin frames.</span>
+          </span>
+          <a
+            href={window.location.origin}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline decoration-dotted underline-offset-2 hover:decoration-solid bg-white/10 hover:bg-white/20 px-2.5 py-0.5 rounded-lg transition-all inline-flex items-center gap-1 font-bold text-amber-50"
+          >
+            <span>Open in New Tab for Sign-In</span>
+            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
+          </a>
+        </div>
+      )}
+
       {/* Toast Notification */}
       <AnimatePresence>
         {toast && (
@@ -533,38 +756,11 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            {needsAuth ? (
-              <button
-                onClick={handleLogin}
-                disabled={isLoggingIn}
-                className="gsi-material-button bg-white border border-slate-200 rounded-xl hover:bg-slate-50 transition-all duration-150 px-4 py-2.5 flex items-center gap-3 shadow-sm hover:shadow text-sm text-slate-700 font-medium"
-              >
-                {isLoggingIn ? (
-                  <RotateCw className="w-5 h-5 animate-spin text-slate-400" />
-                ) : (
-                  <svg className="w-5 h-5 shrink-0" viewBox="0 0 48 48" style={{ display: "block" }}>
-                    <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
-                    <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
-                    <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
-                    <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
-                  </svg>
-                )}
-                <span>{isLoggingIn ? "Signing in..." : "Sign in with Google"}</span>
-              </button>
-            ) : (
+            {!needsAuth && (
               <div className="flex items-center gap-3 bg-slate-50 p-1.5 pr-3 rounded-full border border-slate-100">
-                {user?.photoURL ? (
-                  <img
-                    src={user.photoURL}
-                    referrerPolicy="no-referrer"
-                    alt={user.displayName || "User"}
-                    className="w-8 h-8 rounded-full border border-white shadow"
-                  />
-                ) : (
-                  <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">
-                    {user?.email?.charAt(0).toUpperCase() || "M"}
-                  </div>
-                )}
+                <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">
+                  {user?.email?.charAt(0).toUpperCase() || "U"}
+                </div>
                 <div className="text-left hidden sm:block">
                   <p className="text-xs font-semibold text-slate-800 leading-none">
                     {user?.displayName || "Connected User"}
@@ -587,46 +783,143 @@ export default function App() {
       {/* Main Workspace Frame */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
         {needsAuth ? (
-          /* Landing page when not logged in */
-          <div className="lg:col-span-12 flex flex-col items-center justify-center py-20 text-center max-w-2xl mx-auto">
+          /* Landing page & Supabase Authentication Form when not logged in */
+          <div className="lg:col-span-12 flex flex-col items-center justify-center py-10 text-center max-w-lg mx-auto w-full">
             <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
+              initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              className="p-4 bg-blue-50 text-blue-600 rounded-3xl mb-6 shadow-inner"
+              className="w-full bg-white rounded-2xl shadow-xl border border-slate-100 p-8"
             >
-              <Sparkles className="w-16 h-16" />
+              <div className="flex justify-center mb-4">
+                <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl shadow-inner">
+                  <Sparkles className="w-10 h-10" />
+                </div>
+              </div>
+              <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
+                MailGenius AI
+              </h2>
+              <p className="text-xs text-slate-500 mt-1">Your Intelligent Workspace Assistant</p>
+
+              {/* Form Tab Switches */}
+              <div className="flex bg-slate-100 p-1 rounded-xl mt-6">
+                <button
+                  type="button"
+                  onClick={() => setIsSignUp(false)}
+                  className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+                    !isSignUp ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  Sign In
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsSignUp(true)}
+                  className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
+                    isSignUp ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
+                  }`}
+                >
+                  Register Account
+                </button>
+              </div>
+
+              {/* Email / Password Form */}
+              <form onSubmit={handleSupabaseAuth} className="mt-6 text-left space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
+                    placeholder="name@company.com"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all placeholder:text-slate-400 bg-slate-50/50"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all placeholder:text-slate-400 bg-slate-50/50"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={isLoggingIn}
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-3 font-semibold text-sm transition-all shadow-md shadow-blue-500/10 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 mt-2 animate-none"
+                >
+                  {isLoggingIn ? (
+                    <RotateCw className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <LogIn className="w-4 h-4" />
+                  )}
+                  <span>{isLoggingIn ? "Please wait..." : isSignUp ? "Sign Up" : "Sign In"}</span>
+                </button>
+              </form>
+
+              {/* Guest / Simulation Mode Divider */}
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-slate-100"></div>
+                </div>
+                <div className="relative flex justify-center text-xs uppercase">
+                  <span className="bg-white px-3 text-slate-400 font-medium">Or</span>
+                </div>
+              </div>
+
+              {/* Guest Access Trigger */}
+              <button
+                type="button"
+                onClick={handleGuestAccess}
+                className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200/80 rounded-xl py-2.5 font-medium text-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
+                <span>Explore as Guest (Simulated Mode)</span>
+              </button>
+
+              <p className="text-[10px] text-slate-400 mt-6 leading-relaxed">
+                Connect and store draft messages directly within Supabase securely. Continue as Guest to trial full AI features without an account.
+              </p>
             </motion.div>
-            <h2 className="text-3xl font-extrabold text-slate-900 tracking-tight">
-              Create and Respond with Superpowers
-            </h2>
-            <p className="text-slate-600 mt-3 text-lg leading-relaxed">
-              Connect your Gmail account to read latest threads, summarize inbox items, generate context-aware email replies in seconds, and write polished, customized professional emails tailored perfectly for any audience.
-            </p>
 
-            <button
-              onClick={handleLogin}
-              disabled={isLoggingIn}
-              className="mt-8 bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-2xl shadow-lg shadow-blue-500/20 font-semibold transition-all hover:scale-[1.02] flex items-center gap-3"
-            >
-              <Send className="w-5 h-5" />
-              <span>Get Started with Gmail</span>
-            </button>
-
-            <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-6 text-left w-full">
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-xl flex items-center justify-center font-bold text-lg mb-4">1</div>
-                <h4 className="font-semibold text-slate-950">Intelligent Generation</h4>
-                <p className="text-xs text-slate-500 mt-2">Draft job letters, proposals, meeting syncs, and request follow-ups tailored in 5 tones and 8 languages.</p>
+            {/* Quick Informational Grid */}
+            <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-4 text-left w-full">
+              <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                <h4 className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-blue-500" />
+                  <span>AI Writing</span>
+                </h4>
+                <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                  Generate polished, professional drafts tailored in 5 tones and 8 languages.
+                </p>
               </div>
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="w-10 h-10 bg-blue-50 text-blue-600 rounded-xl flex items-center justify-center font-bold text-lg mb-4">2</div>
-                <h4 className="font-semibold text-slate-950">Inbox Quick Replies</h4>
-                <p className="text-xs text-slate-500 mt-2">Pull your actual inbox, view emails, and click one button to generate highly relevant, professional replies instantly.</p>
+              <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                <h4 className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
+                  <Inbox className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>Simulated Inbox</span>
+                </h4>
+                <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                  Interact with real customer emails, test context replies, and view suggestions instantly.
+                </p>
               </div>
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                <div className="w-10 h-10 bg-emerald-50 text-emerald-600 rounded-xl flex items-center justify-center font-bold text-lg mb-4">3</div>
-                <h4 className="font-semibold text-slate-950">Smart Refinery</h4>
-                <p className="text-xs text-slate-500 mt-2">Easily shorten, expand, improve clarity, fix grammar, or write custom instructions to modify any draft.</p>
+              <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
+                <h4 className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
+                  <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Smart Refinery</span>
+                </h4>
+                <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                  Shorten, expand, clarify, translate, or refine style via custom AI instruction inputs.
+                </p>
               </div>
             </div>
           </div>
@@ -639,25 +932,36 @@ export default function App() {
               <div className="bg-slate-200/60 p-1 rounded-xl flex">
                 <button
                   onClick={() => setActiveTab("write")}
-                  className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                  className={`flex-1 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
                     activeTab === "write"
                       ? "bg-white text-slate-900 shadow-sm"
                       : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <Sparkles className="w-4 h-4 text-blue-500" />
-                  <span>✍️ Draft Email</span>
+                  <span>Draft Email</span>
                 </button>
                 <button
                   onClick={() => setActiveTab("inbox")}
-                  className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all flex items-center justify-center gap-2 ${
+                  className={`flex-1 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
                     activeTab === "inbox"
                       ? "bg-white text-slate-900 shadow-sm"
                       : "text-slate-600 hover:text-slate-900"
                   }`}
                 >
                   <Inbox className="w-4 h-4 text-indigo-500" />
-                  <span>📥 Live Inbox</span>
+                  <span>Live Inbox</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab("drafts")}
+                  className={`flex-1 py-2 rounded-lg text-xs sm:text-sm font-semibold transition-all flex items-center justify-center gap-1.5 ${
+                    activeTab === "drafts"
+                      ? "bg-white text-slate-900 shadow-sm"
+                      : "text-slate-600 hover:text-slate-900"
+                  }`}
+                >
+                  <Star className="w-4 h-4 text-amber-500" />
+                  <span>Saved Drafts</span>
                 </button>
               </div>
 
@@ -985,6 +1289,143 @@ export default function App() {
                   )}
                 </div>
               )}
+
+              {/* TAB 3: SAVED DRAFTS */}
+              {activeTab === "drafts" && (
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 flex flex-col gap-4 max-h-[85vh] overflow-hidden">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-950 flex items-center gap-2">
+                        Saved Drafts
+                      </h3>
+                      <p className="text-xs text-slate-400 mt-0.5">Cloud stored templates and custom drafts</p>
+                    </div>
+                    <button
+                      onClick={fetchAndSetDrafts}
+                      disabled={isLoadingDrafts}
+                      title="Reload Drafts"
+                      className="p-2 border border-slate-200 hover:bg-slate-50 transition-colors rounded-xl text-slate-600 hover:text-slate-900 disabled:opacity-50 cursor-pointer"
+                    >
+                      <RotateCw className={`w-4 h-4 ${isLoadingDrafts ? "animate-spin text-amber-500" : ""}`} />
+                    </button>
+                  </div>
+
+                  {/* Setup Guide for Supabase Missing Table */}
+                  {supabaseMissingTable ? (
+                    <div className="bg-amber-50 border border-amber-200/60 rounded-xl p-4 flex flex-col gap-3 text-xs text-amber-800 overflow-y-auto max-h-[50vh]">
+                      <div className="flex items-start gap-2.5">
+                        <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-amber-900">Supabase Setup Required</p>
+                          <p className="mt-1 text-amber-800 leading-relaxed">
+                            Your Supabase credentials are connected! But the required <code className="font-mono bg-amber-100 px-1 py-0.5 rounded text-[11px] font-bold">drafts</code> table does not exist.
+                          </p>
+                        </div>
+                      </div>
+                      
+                      <div className="bg-slate-900 text-slate-200 rounded-lg p-3 font-mono text-[10px] relative max-h-40 overflow-y-auto border border-slate-800 leading-relaxed whitespace-pre-wrap select-all">
+                        {SUPABASE_SETUP_SQL}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
+                            setIsCopiedSql(true);
+                            showToast("SQL Schema copied to clipboard!", "success");
+                            setTimeout(() => setIsCopiedSql(false), 2000);
+                          }}
+                          className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
+                          <span>{isCopiedSql ? "Copied!" : "Copy SQL Schema"}</span>
+                        </button>
+                        <button
+                          onClick={fetchAndSetDrafts}
+                          className="bg-white border border-amber-200 hover:bg-amber-100 text-amber-900 font-bold py-1.5 px-3 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Retry Connection
+                        </button>
+                      </div>
+                      <p className="text-[10px] text-amber-600 font-medium leading-normal">
+                        Copy the script, paste it in your Supabase Dashboard SQL Editor, click Run, and click Retry!
+                      </p>
+                    </div>
+                  ) : (
+                    /* List of Saved Drafts */
+                    <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                      {isLoadingDrafts && drafts.length === 0 ? (
+                        <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-3">
+                          <RotateCw className="w-8 h-8 animate-spin text-amber-500" />
+                          <span className="text-sm font-medium">Loading saved drafts...</span>
+                        </div>
+                      ) : drafts.length === 0 ? (
+                        <div className="py-12 text-center text-slate-400 flex flex-col items-center gap-2">
+                          <Star className="w-8 h-8 text-slate-300" />
+                          <p className="text-sm font-medium">No saved drafts yet!</p>
+                          <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+                            Save your generated emails from the Workstation editor to keep them securely in your Supabase cloud database.
+                          </p>
+                        </div>
+                      ) : (
+                      drafts.map((draftItem) => (
+                        <div
+                          key={draftItem.id}
+                          className="p-3.5 border border-slate-100 bg-slate-50/50 rounded-xl text-left hover:bg-white hover:border-slate-200 transition-all flex flex-col gap-2 relative group"
+                        >
+                          <div className="flex justify-between items-start gap-2">
+                            <span className="text-xs font-bold text-slate-800 truncate max-w-[65%]">
+                              {draftItem.recipientEmail ? `${draftItem.recipient} (${draftItem.recipientEmail})` : (draftItem.recipient || "No recipient")}
+                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleToggleStar(draftItem);
+                                }}
+                                className="p-1 hover:bg-slate-100 rounded text-amber-500 transition-colors cursor-pointer"
+                                title={draftItem.isStarred ? "Remove Star" : "Star Draft"}
+                              >
+                                <Star className={`w-3.5 h-3.5 ${draftItem.isStarred ? "fill-amber-400" : ""}`} />
+                              </button>
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleDeleteDraft(draftItem.id);
+                                }}
+                                className="p-1 hover:bg-rose-50 rounded text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                                title="Delete Draft"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-xs font-semibold text-slate-900 truncate">
+                            {draftItem.subject || "(No Subject)"}
+                          </p>
+                          <p className="text-[11px] text-slate-500 line-clamp-2 leading-relaxed whitespace-pre-wrap">
+                            {draftItem.body}
+                          </p>
+                          <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 mt-1">
+                            <span className="text-[9px] text-slate-400 font-medium">
+                              {draftItem.tone} • {draftItem.language}
+                            </span>
+                            <button
+                              onClick={() => {
+                                handleLoadDraft(draftItem);
+                              }}
+                              className="text-[10px] bg-blue-50 text-blue-600 hover:bg-blue-100 font-bold px-2.5 py-1 rounded transition-colors cursor-pointer"
+                            >
+                              Load in Editor
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             </section>
 
             {/* RIGHT COLUMN: The Workstation Editor & Actions Toolbar (7 Cols) */}
@@ -998,11 +1439,26 @@ export default function App() {
                     </div>
                     <span className="text-sm font-bold text-slate-800">Email Workstation</span>
                   </div>
-                  {emailBody && (
-                    <div className="text-[10px] text-emerald-600 font-semibold bg-emerald-50 px-2.5 py-1 rounded-full flex items-center gap-1">
-                      <CheckCircle className="w-3 h-3" /> Draft Ready
-                    </div>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {currentDraftId && (
+                      <span className="text-[10px] bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded font-mono font-bold">
+                        CLOUD ACTIVE
+                      </span>
+                    )}
+                    {emailBody && (
+                      <>
+                        <button
+                          onClick={handleClearEditor}
+                          className="text-xs text-slate-500 hover:text-slate-800 hover:bg-slate-100 px-2.5 py-1 rounded-lg transition-all cursor-pointer font-medium"
+                        >
+                          Clear Editor
+                        </button>
+                        <div className="text-[10px] text-emerald-600 font-semibold bg-emerald-50 px-2.5 py-1 rounded-full flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3" /> Draft Ready
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
 
                 {/* Email Metadata Fields */}
@@ -1115,7 +1571,7 @@ export default function App() {
                       onClick={handleCopyToClipboard}
                       disabled={!emailBody}
                       title="Copy to Clipboard"
-                      className="p-3 border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-800 rounded-xl transition-all disabled:opacity-40 flex items-center gap-2 text-xs font-semibold"
+                      className="p-3 border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-800 rounded-xl transition-all disabled:opacity-40 flex items-center gap-2 text-xs font-semibold cursor-pointer"
                     >
                       {copied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
                       <span>Copy</span>
@@ -1125,10 +1581,30 @@ export default function App() {
                       onClick={handleDownloadPDF}
                       disabled={!emailBody}
                       title="Download as PDF"
-                      className="p-3 border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-800 rounded-xl transition-all disabled:opacity-40 flex items-center gap-2 text-xs font-semibold"
+                      className="p-3 border border-slate-200 hover:bg-slate-50 text-slate-600 hover:text-slate-800 rounded-xl transition-all disabled:opacity-40 flex items-center gap-2 text-xs font-semibold cursor-pointer"
                     >
                       <Download className="w-4 h-4 text-slate-500" />
                       <span>Download PDF</span>
+                    </button>
+
+                    <button
+                      onClick={handleSaveCurrentDraft}
+                      disabled={!emailBody || isSavingDraft}
+                      title="Save to Supabase"
+                      className="p-3 border border-slate-200 hover:bg-slate-50 text-amber-600 hover:text-amber-700 hover:border-amber-200 rounded-xl transition-all disabled:opacity-40 flex items-center gap-2 text-xs font-semibold cursor-pointer"
+                    >
+                      {isSavingDraft ? (
+                        <RotateCw className="w-4 h-4 animate-spin text-amber-500" />
+                      ) : (
+                        <Star className={`w-4 h-4 text-amber-500 ${currentDraftId ? "fill-amber-400" : ""}`} />
+                      )}
+                      <span>
+                        {isSavingDraft
+                          ? "Saving..."
+                          : currentDraftId
+                          ? "Update Supabase"
+                          : "Save to Supabase"}
+                      </span>
                     </button>
                   </div>
 
@@ -1140,12 +1616,12 @@ export default function App() {
                     {isSending ? (
                       <>
                         <RotateCw className="w-4 h-4 animate-spin" />
-                        <span>Sending via Gmail...</span>
+                        <span>Sending...</span>
                       </>
                     ) : (
                       <>
                         <Send className="w-4 h-4" />
-                        <span>Send with Gmail</span>
+                        <span>Send Email</span>
                       </>
                     )}
                   </button>
@@ -1159,7 +1635,7 @@ export default function App() {
       {/* Footer credits with clean spacing */}
       <footer className="bg-white border-t border-slate-100 py-6 text-center mt-12 text-xs text-slate-400">
         <div className="max-w-7xl mx-auto px-4">
-          <p>© 2026 MailGenius AI. Built with Google Gemini & Gmail Workspace Integration APIs.</p>
+          <p>© 2026 MailGenius AI. Powered by Google Gemini & Supabase.</p>
         </div>
       </footer>
     </div>
