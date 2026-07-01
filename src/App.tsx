@@ -1,17 +1,4 @@
 import React, { useState, useEffect } from "react";
-import {
-  getSupabaseDrafts,
-  saveSupabaseDraft,
-  toggleSupabaseStarDraft,
-  deleteSupabaseDraft,
-  isSupabaseConfigured,
-  SUPABASE_SETUP_SQL,
-  supabaseSignIn,
-  supabaseSignUp,
-  supabaseSignOut,
-  onSupabaseAuthStateChange,
-  Draft
-} from "./lib/supabase";
 import { jsPDF } from "jspdf";
 import {
   Mail,
@@ -42,31 +29,38 @@ import {
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 
-export default function App() {
-  // Auth state
-  const [user, setUser] = useState<any>(null);
-  const [needsAuth, setNeedsAuth] = useState(true);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [authErrorDetail, setAuthErrorDetail] = useState<string | null>(null);
-  const [isIframe, setIsIframe] = useState(false);
+export interface Draft {
+  id: string;
+  userId: string;
+  recipient: string;
+  recipientEmail: string;
+  subject: string;
+  body: string;
+  tone: string;
+  language: string;
+  isStarred: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
 
-  // Supabase Auth Form States
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [isSignUp, setIsSignUp] = useState(false);
+export default function App() {
+  // Local mode default user
+  const [user, setUser] = useState<any>({
+    uid: "local-user",
+    email: "user@mailgenius.ai",
+    displayName: "MailGenius Local User"
+  });
+  const [needsAuth] = useState(false);
+  const [isIframe, setIsIframe] = useState(false);
 
   // Tab state: "write" or "inbox" or "drafts"
   const [activeTab, setActiveTab] = useState<"write" | "inbox" | "drafts">("write");
 
-  // Cloud Firestore Saved Drafts State
+  // Local Storage Saved Drafts State
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [isLoadingDrafts, setIsLoadingDrafts] = useState(false);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [currentDraftId, setCurrentDraftId] = useState<string | null>(null);
-
-  // Database provider is now purely Supabase
-  const [supabaseMissingTable, setSupabaseMissingTable] = useState(false);
-  const [isCopiedSql, setIsCopiedSql] = useState(false);
 
   // Inbox state (Simulated)
   interface GmailMessage {
@@ -147,59 +141,27 @@ export default function App() {
     }
   ];
 
-  // Initialize auth state and load simulated inbox
+  // Initialize and load simulated inbox and drafts
   useEffect(() => {
     setIsIframe(window.self !== window.top);
-    
-    const unsubscribe = onSupabaseAuthStateChange((supabaseUser) => {
-      if (supabaseUser) {
-        setUser({
-          uid: supabaseUser.id,
-          email: supabaseUser.email,
-          displayName: supabaseUser.email?.split("@")[0] || "User",
-        });
-        setNeedsAuth(false);
-      } else {
-        setUser(null);
-        setNeedsAuth(true);
-      }
-    });
-
-    // Populate mock inbox initial set
     setInbox(MOCK_INBOX_EMAILS);
-
-    return () => unsubscribe();
+    fetchAndSetDrafts();
   }, []);
 
-  // Fetch saved drafts from selected database
+  // Fetch saved drafts from localStorage
   const fetchAndSetDrafts = async () => {
-    if (!user) return;
     setIsLoadingDrafts(true);
-    setSupabaseMissingTable(false);
     try {
-      const allDrafts = await getSupabaseDrafts(user.uid);
+      const stored = localStorage.getItem("mailgenius_drafts");
+      const allDrafts = stored ? JSON.parse(stored) : [];
       setDrafts(allDrafts);
     } catch (err: any) {
       console.error("Error loading drafts:", err);
-      if (err.message === "SUPABASE_TABLE_MISSING") {
-        setSupabaseMissingTable(true);
-        showToast("Supabase table 'drafts' is missing. Setup required.", "error");
-      } else {
-        showToast("Error loading drafts: " + err.message, "error");
-      }
+      showToast("Error loading drafts: " + err.message, "error");
     } finally {
       setIsLoadingDrafts(false);
     }
   };
-
-  // Sync drafts list when user auth status changes
-  useEffect(() => {
-    if (user) {
-      fetchAndSetDrafts();
-    } else {
-      setDrafts([]);
-    }
-  }, [user]);
 
   // Draft operations handlers
   const handleSaveCurrentDraft = async () => {
@@ -209,27 +171,55 @@ export default function App() {
     }
     setIsSavingDraft(true);
     try {
-      const savedId = await saveSupabaseDraft(user.uid, {
-        id: currentDraftId || undefined,
-        recipient: recipient || emailTo.split("@")[0] || "No recipient name",
-        recipientEmail: emailTo || recipientEmail || "",
-        subject: emailSubject || "(No Subject)",
-        body: emailBody,
-        tone: tone,
-        language: language,
-        isStarred: false,
-      });
+      const stored = localStorage.getItem("mailgenius_drafts");
+      const currentDrafts: Draft[] = stored ? JSON.parse(stored) : [];
+      
+      let savedId = currentDraftId;
+      if (savedId) {
+        // Update existing
+        const index = currentDrafts.findIndex(d => d.id === savedId);
+        if (index !== -1) {
+          currentDrafts[index] = {
+            ...currentDrafts[index],
+            recipient: recipient || emailTo.split("@")[0] || "No recipient name",
+            recipientEmail: emailTo || recipientEmail || "",
+            subject: emailSubject || "(No Subject)",
+            body: emailBody,
+            tone: tone,
+            language: language,
+            updatedAt: new Date().toISOString(),
+          };
+        } else {
+          savedId = null; // Reset if not found in list
+        }
+      }
+      
+      if (!savedId) {
+        // Create new
+        savedId = "draft_" + Math.random().toString(36).substring(2, 9);
+        const newDraft: Draft = {
+          id: savedId,
+          userId: "local-user",
+          recipient: recipient || emailTo.split("@")[0] || "No recipient name",
+          recipientEmail: emailTo || recipientEmail || "",
+          subject: emailSubject || "(No Subject)",
+          body: emailBody,
+          tone: tone,
+          language: language,
+          isStarred: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        currentDrafts.unshift(newDraft);
+      }
+
+      localStorage.setItem("mailgenius_drafts", JSON.stringify(currentDrafts));
       setCurrentDraftId(savedId);
-      showToast(currentDraftId ? "Draft updated in Supabase!" : "Draft saved to Supabase!", "success");
-      await fetchAndSetDrafts();
+      showToast(currentDraftId ? "Draft updated locally!" : "Draft saved locally!", "success");
+      setDrafts(currentDrafts);
     } catch (err: any) {
       console.error("Failed to save draft:", err);
-      if (err.message === "SUPABASE_TABLE_MISSING") {
-        setSupabaseMissingTable(true);
-        showToast("Supabase drafts table is missing. Setup required.", "error");
-      } else {
-        showToast("Failed to save draft: " + err.message, "error");
-      }
+      showToast("Failed to save draft: " + err.message, "error");
     } finally {
       setIsSavingDraft(false);
     }
@@ -237,9 +227,16 @@ export default function App() {
 
   const handleToggleStar = async (draftItem: Draft) => {
     try {
-      await toggleSupabaseStarDraft(draftItem.id, draftItem.isStarred, user.uid);
-      showToast(draftItem.isStarred ? "Removed star from draft" : "Draft starred!", "success");
-      await fetchAndSetDrafts();
+      const stored = localStorage.getItem("mailgenius_drafts");
+      const currentDrafts: Draft[] = stored ? JSON.parse(stored) : [];
+      const index = currentDrafts.findIndex(d => d.id === draftItem.id);
+      if (index !== -1) {
+        currentDrafts[index].isStarred = !currentDrafts[index].isStarred;
+        currentDrafts[index].updatedAt = new Date().toISOString();
+        localStorage.setItem("mailgenius_drafts", JSON.stringify(currentDrafts));
+        setDrafts(currentDrafts);
+        showToast(currentDrafts[index].isStarred ? "Draft starred!" : "Removed star from draft", "success");
+      }
     } catch (err: any) {
       console.error("Failed to toggle star:", err);
       showToast("Error updating star: " + err.message, "error");
@@ -249,12 +246,15 @@ export default function App() {
   const handleDeleteDraft = async (draftId: string) => {
     if (!confirm("Are you sure you want to delete this draft?")) return;
     try {
-      await deleteSupabaseDraft(draftId, user.uid);
+      const stored = localStorage.getItem("mailgenius_drafts");
+      const currentDrafts: Draft[] = stored ? JSON.parse(stored) : [];
+      const filtered = currentDrafts.filter(d => d.id !== draftId);
+      localStorage.setItem("mailgenius_drafts", JSON.stringify(filtered));
       if (currentDraftId === draftId) {
         setCurrentDraftId(null);
       }
+      setDrafts(filtered);
       showToast("Draft deleted successfully.", "success");
-      await fetchAndSetDrafts();
     } catch (err: any) {
       console.error("Failed to delete draft:", err);
       showToast("Error deleting draft: " + err.message, "error");
@@ -289,62 +289,9 @@ export default function App() {
     }, 4000);
   };
 
-  // Supabase Auth Handler (Email & Password / SignUp or SignIn)
-  const handleSupabaseAuth = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!authEmail || !authPassword) {
-      showToast("Please enter both email and password.", "error");
-      return;
-    }
-    if (authPassword.length < 6) {
-      showToast("Password must be at least 6 characters.", "error");
-      return;
-    }
-
-    setIsLoggingIn(true);
-    setAuthErrorDetail(null);
-    try {
-      if (isSignUp) {
-        await supabaseSignUp(authEmail, authPassword);
-        showToast("Sign up initiated! If email confirmation is enabled, please verify your email.", "success");
-      } else {
-        await supabaseSignIn(authEmail, authPassword);
-        showToast("Signed in successfully!", "success");
-      }
-    } catch (err: any) {
-      console.error("Auth failed:", err);
-      showToast(err.message || "Authentication failed. Check your credentials.", "error");
-      setAuthErrorDetail(err.message || "An authentication error occurred.");
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  // Guest Bypass Login Handler
-  const handleGuestAccess = () => {
-    setUser({
-      uid: "guest-user-123",
-      email: "guest@mailgenius.ai",
-      displayName: "Guest Explorer",
-    });
-    setNeedsAuth(false);
-    showToast("Logged in as Guest!", "info");
-  };
-
   // Sign out Handler
-  const handleLogout = async () => {
-    try {
-      // If the current user is a guest, just clear state, else sign out from Supabase
-      if (user?.uid !== "guest-user-123") {
-        await supabaseSignOut();
-      }
-      setUser(null);
-      setNeedsAuth(true);
-      setSelectedMessage(null);
-      showToast("Successfully logged out.", "info");
-    } catch (err: any) {
-      console.error("Logout failed:", err);
-    }
+  const handleLogout = () => {
+    showToast("Logout disabled in offline local mode.", "info");
   };
 
   // Fetch / Sync Simulated Inbox
@@ -756,178 +703,25 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
-            {!needsAuth && (
-              <div className="flex items-center gap-3 bg-slate-50 p-1.5 pr-3 rounded-full border border-slate-100">
-                <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">
-                  {user?.email?.charAt(0).toUpperCase() || "U"}
-                </div>
-                <div className="text-left hidden sm:block">
-                  <p className="text-xs font-semibold text-slate-800 leading-none">
-                    {user?.displayName || "Connected User"}
-                  </p>
-                  <p className="text-[10px] text-slate-500 leading-none mt-0.5">{user?.email}</p>
-                </div>
-                <button
-                  onClick={handleLogout}
-                  title="Sign Out"
-                  className="p-1.5 hover:bg-slate-200 text-slate-500 hover:text-slate-800 transition-colors rounded-full"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
+            <div className="flex items-center gap-3 bg-slate-50 p-1.5 pr-3 rounded-full border border-slate-100">
+              <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">
+                L
               </div>
-            )}
+              <div className="text-left hidden sm:block">
+                <p className="text-xs font-semibold text-slate-800 leading-none">
+                  Local Workspace
+                </p>
+                <p className="text-[10px] text-slate-500 leading-none mt-0.5">offline@mailgenius.ai</p>
+              </div>
+            </div>
           </div>
         </div>
       </header>
 
       {/* Main Workspace Frame */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {needsAuth ? (
-          /* Landing page & Supabase Authentication Form when not logged in */
-          <div className="lg:col-span-12 flex flex-col items-center justify-center py-10 text-center max-w-lg mx-auto w-full">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="w-full bg-white rounded-2xl shadow-xl border border-slate-100 p-8"
-            >
-              <div className="flex justify-center mb-4">
-                <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl shadow-inner">
-                  <Sparkles className="w-10 h-10" />
-                </div>
-              </div>
-              <h2 className="text-2xl font-bold text-slate-900 tracking-tight">
-                MailGenius AI
-              </h2>
-              <p className="text-xs text-slate-500 mt-1">Your Intelligent Workspace Assistant</p>
-
-              {/* Form Tab Switches */}
-              <div className="flex bg-slate-100 p-1 rounded-xl mt-6">
-                <button
-                  type="button"
-                  onClick={() => setIsSignUp(false)}
-                  className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-                    !isSignUp ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
-                  }`}
-                >
-                  Sign In
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setIsSignUp(true)}
-                  className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all ${
-                    isSignUp ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-900"
-                  }`}
-                >
-                  Register Account
-                </button>
-              </div>
-
-              {/* Email / Password Form */}
-              <form onSubmit={handleSupabaseAuth} className="mt-6 text-left space-y-4">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Email Address
-                  </label>
-                  <input
-                    type="email"
-                    required
-                    value={authEmail}
-                    onChange={(e) => setAuthEmail(e.target.value)}
-                    placeholder="name@company.com"
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all placeholder:text-slate-400 bg-slate-50/50"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Password
-                  </label>
-                  <input
-                    type="password"
-                    required
-                    minLength={6}
-                    value={authPassword}
-                    onChange={(e) => setAuthPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-all placeholder:text-slate-400 bg-slate-50/50"
-                  />
-                </div>
-
-                <button
-                  type="submit"
-                  disabled={isLoggingIn}
-                  className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-3 font-semibold text-sm transition-all shadow-md shadow-blue-500/10 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 mt-2 animate-none"
-                >
-                  {isLoggingIn ? (
-                    <RotateCw className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <LogIn className="w-4 h-4" />
-                  )}
-                  <span>{isLoggingIn ? "Please wait..." : isSignUp ? "Sign Up" : "Sign In"}</span>
-                </button>
-              </form>
-
-              {/* Guest / Simulation Mode Divider */}
-              <div className="relative my-6">
-                <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-slate-100"></div>
-                </div>
-                <div className="relative flex justify-center text-xs uppercase">
-                  <span className="bg-white px-3 text-slate-400 font-medium">Or</span>
-                </div>
-              </div>
-
-              {/* Guest Access Trigger */}
-              <button
-                type="button"
-                onClick={handleGuestAccess}
-                className="w-full bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200/80 rounded-xl py-2.5 font-medium text-xs transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-blue-500 animate-pulse" />
-                <span>Explore as Guest (Simulated Mode)</span>
-              </button>
-
-              <p className="text-[10px] text-slate-400 mt-6 leading-relaxed">
-                Connect and store draft messages directly within Supabase securely. Continue as Guest to trial full AI features without an account.
-              </p>
-            </motion.div>
-
-            {/* Quick Informational Grid */}
-            <div className="mt-10 grid grid-cols-1 sm:grid-cols-3 gap-4 text-left w-full">
-              <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                <h4 className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5 text-blue-500" />
-                  <span>AI Writing</span>
-                </h4>
-                <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
-                  Generate polished, professional drafts tailored in 5 tones and 8 languages.
-                </p>
-              </div>
-              <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                <h4 className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
-                  <Inbox className="w-3.5 h-3.5 text-indigo-500" />
-                  <span>Simulated Inbox</span>
-                </h4>
-                <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
-                  Interact with real customer emails, test context replies, and view suggestions instantly.
-                </p>
-              </div>
-              <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm">
-                <h4 className="font-semibold text-xs text-slate-900 flex items-center gap-1.5">
-                  <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>Smart Refinery</span>
-                </h4>
-                <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
-                  Shorten, expand, clarify, translate, or refine style via custom AI instruction inputs.
-                </p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          /* Active full-stack App Workspace */
-          <>
-            {/* LEFT COLUMN: Writing Options or Inbox Sync (5 Cols) */}
-            <section className="lg:col-span-5 flex flex-col gap-6">
+        {/* LEFT COLUMN: Writing Options or Inbox Sync (5 Cols) */}
+        <section className="lg:col-span-5 flex flex-col gap-6">
               {/* Tab Selector */}
               <div className="bg-slate-200/60 p-1 rounded-xl flex">
                 <button
@@ -1310,65 +1104,23 @@ export default function App() {
                     </button>
                   </div>
 
-                  {/* Setup Guide for Supabase Missing Table */}
-                  {supabaseMissingTable ? (
-                    <div className="bg-amber-50 border border-amber-200/60 rounded-xl p-4 flex flex-col gap-3 text-xs text-amber-800 overflow-y-auto max-h-[50vh]">
-                      <div className="flex items-start gap-2.5">
-                        <AlertTriangle className="w-5 h-5 shrink-0 text-amber-600 mt-0.5" />
-                        <div>
-                          <p className="font-bold text-amber-900">Supabase Setup Required</p>
-                          <p className="mt-1 text-amber-800 leading-relaxed">
-                            Your Supabase credentials are connected! But the required <code className="font-mono bg-amber-100 px-1 py-0.5 rounded text-[11px] font-bold">drafts</code> table does not exist.
-                          </p>
-                        </div>
+                  {/* List of Saved Drafts */}
+                  <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                    {isLoadingDrafts && drafts.length === 0 ? (
+                      <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-3">
+                        <RotateCw className="w-8 h-8 animate-spin text-amber-500" />
+                        <span className="text-sm font-medium">Loading saved drafts...</span>
                       </div>
-                      
-                      <div className="bg-slate-900 text-slate-200 rounded-lg p-3 font-mono text-[10px] relative max-h-40 overflow-y-auto border border-slate-800 leading-relaxed whitespace-pre-wrap select-all">
-                        {SUPABASE_SETUP_SQL}
+                    ) : drafts.length === 0 ? (
+                      <div className="py-12 text-center text-slate-400 flex flex-col items-center gap-2">
+                        <Star className="w-8 h-8 text-slate-300" />
+                        <p className="text-sm font-medium">No saved drafts yet!</p>
+                        <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
+                          Save your generated emails from the Workstation editor to keep them securely in your Firestore cloud database.
+                        </p>
                       </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => {
-                            navigator.clipboard.writeText(SUPABASE_SETUP_SQL);
-                            setIsCopiedSql(true);
-                            showToast("SQL Schema copied to clipboard!", "success");
-                            setTimeout(() => setIsCopiedSql(false), 2000);
-                          }}
-                          className="flex-1 bg-amber-600 hover:bg-amber-700 text-white font-bold py-1.5 px-3 rounded-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-                        >
-                          <Copy className="w-3.5 h-3.5" />
-                          <span>{isCopiedSql ? "Copied!" : "Copy SQL Schema"}</span>
-                        </button>
-                        <button
-                          onClick={fetchAndSetDrafts}
-                          className="bg-white border border-amber-200 hover:bg-amber-100 text-amber-900 font-bold py-1.5 px-3 rounded-lg transition-colors cursor-pointer"
-                        >
-                          Retry Connection
-                        </button>
-                      </div>
-                      <p className="text-[10px] text-amber-600 font-medium leading-normal">
-                        Copy the script, paste it in your Supabase Dashboard SQL Editor, click Run, and click Retry!
-                      </p>
-                    </div>
-                  ) : (
-                    /* List of Saved Drafts */
-                    <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-                      {isLoadingDrafts && drafts.length === 0 ? (
-                        <div className="py-12 text-center text-slate-500 flex flex-col items-center gap-3">
-                          <RotateCw className="w-8 h-8 animate-spin text-amber-500" />
-                          <span className="text-sm font-medium">Loading saved drafts...</span>
-                        </div>
-                      ) : drafts.length === 0 ? (
-                        <div className="py-12 text-center text-slate-400 flex flex-col items-center gap-2">
-                          <Star className="w-8 h-8 text-slate-300" />
-                          <p className="text-sm font-medium">No saved drafts yet!</p>
-                          <p className="text-xs text-slate-400 max-w-xs leading-relaxed">
-                            Save your generated emails from the Workstation editor to keep them securely in your Supabase cloud database.
-                          </p>
-                        </div>
-                      ) : (
-                      drafts.map((draftItem) => (
+                    ) : (
+                    drafts.map((draftItem) => (
                         <div
                           key={draftItem.id}
                           className="p-3.5 border border-slate-100 bg-slate-50/50 rounded-xl text-left hover:bg-white hover:border-slate-200 transition-all flex flex-col gap-2 relative group"
@@ -1423,7 +1175,6 @@ export default function App() {
                       ))
                     )}
                   </div>
-                )}
               </div>
             )}
             </section>
@@ -1590,7 +1341,7 @@ export default function App() {
                     <button
                       onClick={handleSaveCurrentDraft}
                       disabled={!emailBody || isSavingDraft}
-                      title="Save to Supabase"
+                      title="Save Draft"
                       className="p-3 border border-slate-200 hover:bg-slate-50 text-amber-600 hover:text-amber-700 hover:border-amber-200 rounded-xl transition-all disabled:opacity-40 flex items-center gap-2 text-xs font-semibold cursor-pointer"
                     >
                       {isSavingDraft ? (
@@ -1602,8 +1353,8 @@ export default function App() {
                         {isSavingDraft
                           ? "Saving..."
                           : currentDraftId
-                          ? "Update Supabase"
-                          : "Save to Supabase"}
+                          ? "Update Draft"
+                          : "Save Draft"}
                       </span>
                     </button>
                   </div>
@@ -1628,14 +1379,12 @@ export default function App() {
                 </div>
               </div>
             </section>
-          </>
-        )}
       </main>
 
       {/* Footer credits with clean spacing */}
       <footer className="bg-white border-t border-slate-100 py-6 text-center mt-12 text-xs text-slate-400">
         <div className="max-w-7xl mx-auto px-4">
-          <p>© 2026 MailGenius AI. Powered by Google Gemini & Supabase.</p>
+          <p>© 2026 MailGenius AI. Powered by Google Gemini & Local Browser Storage.</p>
         </div>
       </footer>
     </div>
