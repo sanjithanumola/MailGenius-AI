@@ -610,25 +610,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col antialiased">
-      {/* Iframe Preview Warning & Redirect */}
-      {isIframe && (
-        <div className="bg-gradient-to-r from-amber-500 via-amber-600 to-amber-500 text-white px-4 py-2 text-center text-xs font-semibold flex flex-wrap items-center justify-center gap-x-3 gap-y-1 relative z-50 shadow-sm border-b border-amber-600/20">
-          <span className="flex items-center gap-1.5">
-            <AlertTriangle className="w-4 h-4 shrink-0 text-amber-100" />
-            <span>Currently in preview iframe. Browsers block authentication popups inside cross-origin frames.</span>
-          </span>
-          <a
-            href={window.location.origin}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline decoration-dotted underline-offset-2 hover:decoration-solid bg-white/10 hover:bg-white/20 px-2.5 py-0.5 rounded-lg transition-all inline-flex items-center gap-1 font-bold text-amber-50"
-          >
-            <span>Open in New Tab for Sign-In</span>
-            <ChevronRight className="w-3.5 h-3.5 shrink-0" />
-          </a>
-        </div>
-      )}
-
       {/* Toast Notification */}
       <AnimatePresence>
         {toast && (
@@ -715,20 +696,6 @@ export default function App() {
             <div>
               <h1 className="text-xl font-bold tracking-tight text-slate-900">MailGenius AI</h1>
               <p className="text-xs text-slate-500">Your Intelligent Workspace Assistant</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-3 bg-slate-50 p-1.5 pr-3 rounded-full border border-slate-100">
-              <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold">
-                L
-              </div>
-              <div className="text-left hidden sm:block">
-                <p className="text-xs font-semibold text-slate-800 leading-none">
-                  Local Workspace
-                </p>
-                <p className="text-[10px] text-slate-500 leading-none mt-0.5">offline@mailgenius.ai</p>
-              </div>
             </div>
           </div>
         </div>
