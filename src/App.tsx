@@ -350,20 +350,36 @@ export default function App() {
 
   // POST request helper to local API routes
   const callAIEndpoint = async (endpoint: string, body: object) => {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-    });
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
 
-    if (!res.ok) {
-      const errData = await res.json();
-      throw new Error(errData.error || `Request to ${endpoint} failed.`);
+      const contentType = res.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        const text = await res.text();
+        if (text.includes("wait while") || text.includes("starting") || text.includes("The page")) {
+          throw new Error("The server is starting or temporarily offline. Please wait a few seconds and try again.");
+        }
+        throw new Error(`Invalid server response format (expected JSON, got HTML). Status: ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `Request to ${endpoint} failed with status ${res.status}`);
+      }
+
+      return data;
+    } catch (err: any) {
+      if (err.message && (err.message.includes("Unexpected token") || err.message.includes("JSON"))) {
+        throw new Error("The server returned an invalid response format. Please verify the backend is running.");
+      }
+      throw err;
     }
-
-    return await res.json();
   };
 
   // AI Write Handler
